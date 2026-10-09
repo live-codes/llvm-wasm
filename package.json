@@ -38,7 +38,6 @@
   "scripts": {
     "pack": "node scripts/pack-out.mjs",
     "prepack": "node scripts/pack-out.mjs",
-    "postinstall": "node bin/llvm-wasm-unpack.mjs --if-missing",
     "test": "node scripts/check-load.mjs",
     "check": "node scripts/check-load.mjs",
     "verify": "bash verify/run-probe.sh"

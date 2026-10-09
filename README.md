@@ -40,18 +40,24 @@ browser never wants.
 ## Use on disk
 
 ```bash
-npm install @live-codes/llvm-wasm       # inflates the archives into out/lib on install
+npm install @live-codes/llvm-wasm       # nothing runs: no lifecycle scripts
 LLVM_WASM=$(npx llvm-wasm-path)         # …/node_modules/@live-codes/llvm-wasm
 ```
 
-A link on disk wants the plain files — `-L out/lib`, `-I out/include` — so `postinstall`
-inflates them. Where lifecycle scripts are skipped (`--ignore-scripts`, or a CI that blocks
-them), run it yourself; it is one command, and it checks each archive against its receipt
-before writing it:
+The package installs without running anything — no `postinstall`, nothing for a policy to block.
+Its own code decompresses when it is used: the browser entry inflates each archive in memory as it
+fetches it, and the Node entry does the same off disk. Nothing is written anywhere.
+
+A *link* on disk is the one case that wants files rather than bytes. Inflate them when you get
+there — one command, and it checks each archive against its receipt before writing it:
 
 ```bash
 npx llvm-wasm-unpack
 ```
+
+A build that would rather not be told when to unpack can simply gunzip what it needs —
+`out/lib/libLLVMCore.a.gz` → `libLLVMCore.a` — which is what the Crystal compiler's own build does
+rather than depend on anything having run at install time.
 
 | in the package | what it is |
 | --- | --- |
@@ -149,10 +155,13 @@ over HTTP — the one path the tarball has to keep working.
 
 ## The size, honestly
 
-**37.7 MB to download, ~178 MB installed.** The tarball is 32.5 MB of gzipped archives plus
-the headers (which npm's own gzip shrinks a little further); `postinstall` inflates the
-archives in place, so an installed package holds both the `.gz` a browser would fetch and the
-plain `.a` a linker reads.
+**37.7 MB on the wire, 62 MB unpacked** — 32.5 MB of gzipped archives, then the headers, the
+pipeline and the compatibility layer. Both numbers are inside what a host will take: jsDelivr
+serves packages up to 150 MB, and GitHub refuses a file over 100 MB (the largest file here is
+3.9 MB; the largest in the repository, which also holds the plain archives, is 12.8 MB).
+
+Inflating the archives when a build needs files adds 112.8 MB to *that build's* disk. It is a
+choice made at that moment by that build — not something `npm install` does on your behalf.
 
 A single `.tar.xz` of the whole tree would be **22 MB** — half again smaller — and it is the
 wrong answer here: a browser cannot open xz without a decoder it does not have, and reaching

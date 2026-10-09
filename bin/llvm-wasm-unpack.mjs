@@ -2,12 +2,15 @@
 // Put the plain archives back, for a build that reads them as files.
 //
 //   llvm-wasm-unpack                 # inflate out/lib/*.a.gz into out/lib/*.a
-//   llvm-wasm-unpack --if-missing    # skip when they are already there (what postinstall runs)
+//   llvm-wasm-unpack --if-missing    # skip what is already there
 //
 // The package ships the archives gzipped — one file each, which is the shape a browser can
 // fetch and inflate with `DecompressionStream`. A *link* on disk wants the plain files, so
-// that `-L out/lib`, `-I out/include` and `llvm-wasm-path` mean what they always meant.
-// Each archive is checked against the pinned receipt before it is written.
+// that `-L out/lib`, `-I out/include` and `llvm-wasm-path` mean what they always meant. Each
+// archive is checked against the pinned receipt before it is written.
+//
+// Nothing runs this for you: the package has no lifecycle script on purpose. Inflating is
+// something a build decides to do when it needs files — or it can just gunzip what it needs.
 import { createHash } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -23,7 +26,7 @@ if (args.includes('--help') || args.includes('-h')) {
 	console.log(`Inflate the archives this package ships.
 
   llvm-wasm-unpack               out/lib/*.a, from the .gz beside them
-  --if-missing                   do nothing when they are already inflated (postinstall)
+  --if-missing                   do nothing when they are already inflated
   --help                         this
 
 A browser does not need this: it fetches out/lib/*.a.gz and inflates them itself. This is
