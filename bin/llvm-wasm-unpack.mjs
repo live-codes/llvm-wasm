@@ -1,77 +1,85 @@
 #!/usr/bin/env node
-// Put the archives back.
+// Put the plain archives back, for a build that reads them as files.
 //
-//   llvm-wasm-unpack                 # into this package, where a build script expects them
-//   llvm-wasm-unpack <dir>           # into a directory you name: a complete $LLVM_WASM
-//   --if-missing                     # do nothing when out/ is already there (postinstall)
-//   --keep-archive                   # keep out.tar.xz afterwards
+//   llvm-wasm-unpack                 # inflate out/lib/*.a.gz into out/lib/*.a
+//   llvm-wasm-unpack --if-missing    # skip when they are already there (what postinstall runs)
 //
-// The npm tarball carries one file, out.tar.xz (21 MB), rather than 2278 (38 MB) — the
-// same bytes, half the download, one request from a CDN. This unpacks it, after
-// checking it against the receipt published beside it.
-import { execFileSync } from 'node:child_process';
+// The package ships the archives gzipped — one file each, which is the shape a browser can
+// fetch and inflate with `DecompressionStream`. A *link* on disk wants the plain files, so
+// that `-L out/lib`, `-I out/include` and `llvm-wasm-path` mean what they always meant.
+// Each archive is checked against the pinned receipt before it is written.
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, stat, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gunzipSync } from 'node:zlib';
+
+import { ASSET_RECEIPTS, ASSETS_DIR } from '../src/asset-receipts.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const archive = join(root, 'out.tar.xz');
-const receipt = `${archive}.json`;
-
 const args = process.argv.slice(2);
-const ifMissing = args.includes('--if-missing');
-const keepArchive = args.includes('--keep-archive');
-const target = resolve(args.find((arg) => !arg.startsWith('-')) ?? root);
 
 if (args.includes('--help') || args.includes('-h')) {
-	console.log(`Unpack the libLLVM this package ships.
+	console.log(`Inflate the archives this package ships.
 
-  llvm-wasm-unpack [directory]   default: this package's own directory
-  --if-missing                   skip when out/lib is already there (what postinstall runs)
-  --keep-archive                 keep out.tar.xz after unpacking it
+  llvm-wasm-unpack               out/lib/*.a, from the .gz beside them
+  --if-missing                   do nothing when they are already inflated (postinstall)
   --help                         this
 
-The archive holds out/ (99 archives and the headers) and wasi-compat/, so an unpacked
-directory is complete on its own: point a build at it with LLVM_WASM.`);
+A browser does not need this: it fetches out/lib/*.a.gz and inflates them itself. This is
+for a build on disk, which links against files.`);
 	process.exit(0);
 }
 
-if (ifMissing && (await stat(join(target, 'out', 'lib')).catch(() => null))) {
-	process.exit(0);
-}
+const names = Object.keys(ASSET_RECEIPTS).sort();
+const plain = (name) => join(root, ASSETS_DIR, name);
+const gzipped = (name) => `${plain(name)}.gz`;
 
-if (!(await stat(archive).catch(() => null))) {
-	const message = `no out.tar.xz beside this script (${archive})`;
-	if (ifMissing) {
-		// A checkout has out/ built in place instead, so this is not an error there.
-		console.error(`llvm-wasm-unpack: ${message}.`);
-		process.exit(0);
+if (args.includes('--if-missing')) {
+	const missing = [];
+	for (const name of names) {
+		if (!(await stat(plain(name)).catch(() => null))) missing.push(name);
 	}
-	console.error(`llvm-wasm-unpack: ${message}.`);
-	console.error('In a checkout, build it: node scripts/pack-out.mjs');
-	process.exit(1);
+	if (missing.length === 0) process.exit(0);
 }
 
-// The receipt is published with the archive, so a truncated or corrupted download is a
-// message here rather than a half-unpacked toolchain later.
-const pinned = await readFile(receipt, 'utf8')
-	.then((text) => JSON.parse(text))
-	.catch(() => null);
-if (pinned) {
-	const bytes = await readFile(archive);
-	const digest = createHash('sha256').update(bytes).digest('hex');
-	if (bytes.byteLength !== pinned.bytes || digest !== pinned.sha256) {
-		console.error(`out.tar.xz does not match its receipt: ${bytes.byteLength} bytes, sha256 ${digest.slice(0, 16)}…`);
-		console.error(`expected ${pinned.bytes} bytes, sha256 ${pinned.sha256.slice(0, 16)}…`);
+let written = 0;
+let skipped = 0;
+
+for (const name of names) {
+	const target = plain(name);
+	const archive = gzipped(name);
+
+	const bytes = await readFile(archive).catch(() => null);
+	if (!bytes) {
+		console.error(`llvm-wasm-unpack: ${archive} is missing.`);
+		console.error('In a checkout, rebuild the archives: node scripts/pack-out.mjs');
 		process.exit(1);
 	}
+
+	// The same check the browser makes, for the same reason: a wrong file is a message
+	// here rather than a linker error one step later.
+	const receipt = ASSET_RECEIPTS[name];
+	const digest = createHash('sha256').update(bytes).digest('hex');
+	if (bytes.byteLength !== receipt.bytes || digest !== receipt.sha256) {
+		console.error(`llvm-wasm-unpack: ${name}.gz does not match its receipt ` +
+			`(${bytes.byteLength} bytes, sha256 ${digest.slice(0, 16)}…)`);
+		process.exit(1);
+	}
+
+	const current = await stat(target).catch(() => null);
+	if (current && current.size === receipt.raw) {
+		skipped += 1;
+		continue;
+	}
+
+	await writeFile(target, gunzipSync(bytes));
+	written += 1;
 }
 
-// `tar -C` will not create the directory it is told to chdir into.
-await mkdir(target, { recursive: true });
-execFileSync('tar', ['-xf', archive, '-C', target], { stdio: ['ignore', 'ignore', 'inherit'] });
-if (!keepArchive && target === resolve(root)) await rm(archive, { force: true });
-
-console.log(`Unpacked out/ and wasi-compat/ into ${target}`);
+console.log(
+	`Inflated ${written} archive${written === 1 ? '' : 's'}` +
+		(skipped ? `, ${skipped} already there` : '') +
+		` into ${join(root, ASSETS_DIR)}`
+);
 console.log('Point a build at it: LLVM_WASM=$(llvm-wasm-path)');

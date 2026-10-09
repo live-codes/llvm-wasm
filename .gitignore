@@ -2,7 +2,7 @@
 verify/*.o
 verify/*.wasm
 
-# The one file the npm tarball carries (scripts/pack-out.mjs builds it from out/).
-# out/ itself is committed on purpose: it is the artifact, and it takes an hour to rebuild.
-out.tar.xz
-out.tar.xz.json
+# The archives as they ship: gzipped, one file each (scripts/pack-out.mjs makes them, and
+# src/asset-receipts.js is the committed pin). out/lib/*.a itself is committed on purpose —
+# it is what the pipeline writes, and it takes an hour to rebuild.
+out/lib/*.a.gz

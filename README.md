@@ -10,31 +10,54 @@ you run. Its first consumer is
 [`@live-codes/crystal-wasm`](https://github.com/live-codes/browser-crystal): Crystal's compiler is
 itself a Crystal program that links LLVM, and this is what it links.
 
-## Use
+## In a browser, from a CDN
+
+The archives ship gzipped, one file each, so a page can take the ones it links and inflate
+them with `DecompressionStream` — the only decompressor a browser has:
+
+```js
+import { loadArchives, assetNames } from 'https://cdn.jsdelivr.net/npm/@live-codes/llvm-wasm@0.1.0/src/index.js';
+
+const baseUrl = 'https://cdn.jsdelivr.net/npm/@live-codes/llvm-wasm@0.1.0/';
+
+// Only what this link needs — which is the point of one file per archive.
+const archives = await loadArchives({ baseUrl, only: ['libLLVMCore.a', 'libLLVMSupport.a'] });
+// { 'libLLVMCore.a': Uint8Array, … } — verified and inflated, ready to hand to a linker
+// (a WASI `wasm-ld`; see how @live-codes/crystal-wasm runs one in a page).
+
+assetNames();          // every archive, in a stable order
+```
+
+Every read is checked against the receipts in `src/asset-receipts.js` — length first, then
+SHA-256 — so a truncated download or a host serving something else is a message rather than
+a linker error a step later. Nothing is fetched twice, and nothing is fetched that the link
+does not name.
+
+`wasi-compat/` is *not* gzipped: it is small, and it has to be compiled and linked alongside
+the archives. The same goes for `out/include/`, which a C or C++ build needs as files and a
+browser never wants.
+
+## Use on disk
 
 ```bash
-npm install @live-codes/llvm-wasm       # unpacks the archives on install
+npm install @live-codes/llvm-wasm       # inflates the archives into out/lib on install
 LLVM_WASM=$(npx llvm-wasm-path)         # …/node_modules/@live-codes/llvm-wasm
 ```
 
-The tarball carries the payload as one file, `out.tar.xz`, and `postinstall` unpacks it.
-Where lifecycle scripts are skipped (`--ignore-scripts`, or a CI that blocks them), run it
-yourself — it is one command:
+A link on disk wants the plain files — `-L out/lib`, `-I out/include` — so `postinstall`
+inflates them. Where lifecycle scripts are skipped (`--ignore-scripts`, or a CI that blocks
+them), run it yourself; it is one command, and it checks each archive against its receipt
+before writing it:
 
 ```bash
-npx llvm-wasm-unpack                    # into the package; or `llvm-wasm-unpack <dir>`
+npx llvm-wasm-unpack
 ```
-
-An unpacked directory is complete on its own — `out/lib`, `out/include` and `wasi-compat/` —
-so `llvm-wasm-unpack <dir>` gives you a directory to point `LLVM_WASM` at with no
-node_modules in the path. It checks the archive against `out.tar.xz.json` first, so a
-truncated download is a message rather than a half-unpacked toolchain.
 
 | in the package | what it is |
 | --- | --- |
-| `out.tar.xz` | the payload in one file: **99 static archives** — LLVM and its WebAssembly backend, for `wasm32-wasip1` — their headers, and the compatibility layer |
-| `out/lib/*.a` | the archives, after unpacking |
-| `out/include/` | the matching headers, after unpacking |
+| `out/lib/*.a.gz` | **99 static archives** — LLVM and its WebAssembly backend, for `wasm32-wasip1` — one gzipped file each. **This is what a browser fetches** |
+| `out/lib/*.a` | the same archives, inflated, after `llvm-wasm-unpack` or `postinstall` |
+| `out/include/` | the headers, loose: a linked build needs them as files, and a browser never wants them |
 | `wasi-compat/` | declarations and stub definitions for the POSIX surface WASI does not have — **link this with the archives**, or you will hit undefined `pwd`, `dlopen`, `sigaction`, `fork` and friends |
 | `patches/apply-patches.py` | every source edit that made the build possible |
 | `verify/` | the C-API probe: links against all 99 archives and runs under Node's WASI |
@@ -118,27 +141,28 @@ Env: `WORK` (build tree, default `/root/bc-llvm`), `CACHE` (downloads, `/root/.c
 | `verify/run-probe.sh` | Compiles, links and runs the probe under Node's WASI |
 | `STATUS.md` | Live status: what builds, what remains |
 
-`npm pack` runs `scripts/pack-out.mjs` first: it builds `out.tar.xz` from `out/` and writes
-`out.tar.xz.json` beside it — the one file the tarball carries, and the receipt the unpack
-checks. It rebuilds when `out/` has changed under it, so a stale archive cannot be published,
-and it refuses to pack an incomplete `out/`.
+`npm pack` runs `scripts/pack-out.mjs` first: it gzips each archive in `out/lib` and rewrites
+`src/asset-receipts.js`, the pin that both the browser entry and `llvm-wasm-unpack` check
+against. It re-gzips only what changed, so a stale `.gz` cannot be published, and it refuses to
+pack an incomplete `out/`. `npm run check` then loads the archives through the browser entry
+over HTTP — the one path the tarball has to keep working.
 
 ## The size, honestly
 
-**21 MB to download, 143 MB installed.** The tarball carries the payload as a single
-`out.tar.xz`; `postinstall` unpacks it — and deletes the archive — so a full install is
-143 MB on disk and nothing more.
+**37.7 MB to download, ~178 MB installed.** The tarball is 32.5 MB of gzipped archives plus
+the headers (which npm's own gzip shrinks a little further); `postinstall` inflates the
+archives in place, so an installed package holds both the `.gz` a browser would fetch and the
+plain `.a` a linker reads.
 
-That is 45% less to download than shipping the tree loose: 2278 files make a 38 MB npm
-tarball, because npm's own gzip can only do so much with `.a` files, while xz gets the same
-bytes to 21 MB. It is also the difference for a CDN: one cacheable object instead of 2278
-requests.
+A single `.tar.xz` of the whole tree would be **22 MB** — half again smaller — and it is the
+wrong answer here: a browser cannot open xz without a decoder it does not have, and reaching
+one archive would mean inflating all 142 MB. One gzipped file per archive is what a page can
+actually use: `DecompressionStream`, and only the archives the link names. The browser is the
+target, so the tarball carries the ~15 MB that costs.
 
 The archives are committed rather than built on install, deliberately — a rebuild takes an
 hour of someone's machine and produces byte-identical output (`llvm-wasm.lock.json` pins
-every input; `out.tar.xz.json` pins the archive, and the unpack checks it). If even 21 MB
-becomes the deciding factor, the escape hatch is a release asset plus a fetch, the shape
-`@live-codes/clang-wasm` uses for its own tools.
+every input; `src/asset-receipts.js` pins the shipped bytes).
 
 ## Licence
 

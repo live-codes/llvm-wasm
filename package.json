@@ -8,13 +8,21 @@
     "type": "git",
     "url": "https://github.com/live-codes/llvm-wasm"
   },
+  "exports": {
+    ".": {
+      "node": "./src/index.node.js",
+      "browser": "./src/index.js",
+      "default": "./src/index.js"
+    }
+  },
   "bin": {
     "llvm-wasm-path": "./bin/llvm-wasm-path.mjs",
     "llvm-wasm-unpack": "./bin/llvm-wasm-unpack.mjs"
   },
   "files": [
-    "out.tar.xz",
-    "out.tar.xz.json",
+    "src",
+    "out/lib/*.a.gz",
+    "out/include",
     "patches",
     "wasi-compat",
     "verify",
@@ -28,10 +36,11 @@
     "THIRD-PARTY-NOTICES.md"
   ],
   "scripts": {
-    "check": "node scripts/check-out.mjs",
     "pack": "node scripts/pack-out.mjs",
     "prepack": "node scripts/pack-out.mjs",
     "postinstall": "node bin/llvm-wasm-unpack.mjs --if-missing",
+    "test": "node scripts/check-load.mjs",
+    "check": "node scripts/check-load.mjs",
     "verify": "bash verify/run-probe.sh"
   },
   "keywords": [
@@ -40,6 +49,7 @@
     "webassembly",
     "wasi",
     "wasm32-wasip1",
-    "compiler"
+    "compiler",
+    "browser"
   ]
 }

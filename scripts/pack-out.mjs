@@ -1,32 +1,31 @@
 #!/usr/bin/env node
-// Build out.tar.xz — the one file the npm tarball carries — from out/, and pin it.
+// Gzip each archive, and pin the payload.
 //
 //   node scripts/pack-out.mjs [--force]
 //
-// The tree is 142 MB of archives and headers. As 2278 loose files that is a 38 MB
-// tarball and 2278 requests from a CDN; as one xz archive it is 21 MB and one
-// request, and `llvm-wasm-unpack` puts the tree back. out/ stays in the repository
-// (it is what the pipeline writes) and is excluded from the tarball by `files`.
+// The archives ship gzipped, one file each: `out/lib/libLLVMCore.a.gz`. That is the shape
+// a *browser* can use — `DecompressionStream` inflates gzip and nothing else, and one
+// file per archive means a page fetches only what it links, from a CDN that serves bytes
+// which are already compressed.
 //
-// The archive is rebuilt when it is missing, when --force is given, or when out/ has
-// changed under it: a stale archive would publish the wrong archives silently, which
-// is exactly the failure `npm pack` should not be able to have.
-import { execFileSync } from 'node:child_process';
+// (A single `.tar.xz` of the whole tree would halve the npm tarball, 22 MB against ~37,
+// but a page cannot open it: xz needs a decoder a browser does not have, and reaching one
+// archive would mean inflating all 142 MB. The browser is the target, so the tarball pays.)
+//
+// `out/lib/*.a` stays in the repository — it is what the pipeline writes — and `files`
+// keeps it out of the tarball. What ships is the `.gz` beside it, and the headers, which a
+// linked build needs as files and a browser never wants.
 import { createHash } from 'node:crypto';
-import { readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync } from 'node:zlib';
 
 import { checkOut } from './out-checks.mjs';
 
-// What the archive restores: the archives and headers, and the compatibility layer a
-// consumer has to link with them. The last one is small, and shipping it inside the
-// archive is what makes an unpacked directory usable as `$LLVM_WASM` on its own.
-const MEMBERS = ['out', 'wasi-compat'];
-
 const root = fileURLToPath(new URL('..', import.meta.url));
-const archive = join(root, 'out.tar.xz');
-const receipt = `${archive}.json`;
+const lib = join(root, 'out', 'lib');
+const receiptsPath = join(root, 'src', 'asset-receipts.js');
 
 const force = process.argv.includes('--force');
 
@@ -37,61 +36,57 @@ if (problems.length) {
 	process.exit(1);
 }
 
-const tarTo = (args) => execFileSync('tar', args, { cwd: root, stdio: ['ignore', 'pipe', 'inherit'] }).toString();
+const receipts = {};
+let repacked = 0;
 
-/** The newest mtime under a directory, which is when the tree last changed. */
-async function newest(dir) {
-	let latest = 0;
-	for (const entry of await readdir(dir, { withFileTypes: true })) {
-		const path = join(dir, entry.name);
-		latest = Math.max(latest, entry.isDirectory() ? await newest(path) : (await stat(path)).mtimeMs);
+for (const name of archives.sort()) {
+	const source = join(lib, name);
+	const gzipped = `${source}.gz`;
+	const [raw, existing] = await Promise.all([stat(source), stat(gzipped).catch(() => null)]);
+
+	// Re-gzip only what changed, so this is fast on the common path and correct on the
+	// rare one — a stale .gz would publish bytes that no longer match the receipt.
+	if (force || !existing || existing.mtimeMs < raw.mtimeMs) {
+		await writeFile(gzipped, gzipSync(await readFile(source), { level: 9 }));
+		repacked += 1;
 	}
-	return latest;
+
+	const bytes = await readFile(gzipped);
+	receipts[name] = {
+		bytes: bytes.byteLength,
+		raw: raw.size,
+		sha256: createHash('sha256').update(bytes).digest('hex')
+	};
 }
 
-const current = await stat(archive).catch(() => null);
-if (force || !current || current.mtimeMs < (await newest(join(root, 'out')))) {
-	console.log(current ? 'rebuilding out.tar.xz (out/ is newer)' : 'building out.tar.xz');
-	await rm(archive, { force: true });
-	// Cross-platform on purpose: `tar -cJf` is Windows' bsdtar, macOS' bsdtar and GNU
-	// tar alike, and every one of them can read it back.
-	tarTo(['-cJf', archive, ...MEMBERS]);
-}
+const rawTotal = Object.values(receipts).reduce((sum, receipt) => sum + receipt.raw, 0);
+const gzippedTotal = Object.values(receipts).reduce((sum, receipt) => sum + receipt.bytes, 0);
 
-const bytes = (await stat(archive)).size;
-const digest = createHash('sha256').update(await readFile(archive)).digest('hex');
-
-// The archive has to hold what the unpack promises, or the tarball is a 21 MB lie.
-const listed = tarTo(['-tJf', archive]);
-for (const member of MEMBERS) {
-	if (!listed.includes(`${member}/`)) {
-		console.error(`out.tar.xz does not contain ${member}/`);
-		process.exit(1);
-	}
-}
-for (const name of ['libLLVMCore.a', 'libLLVMWebAssemblyCodeGen.a', 'libLLVMSupport.a']) {
-	if (!listed.includes(`out/lib/${name}`)) {
-		console.error(`out.tar.xz does not contain out/lib/${name}`);
-		process.exit(1);
-	}
-}
-
-// The receipt is what `llvm-wasm-unpack` checks the archive against before extracting
-// it, so a corrupted download is a message rather than a half-unpacked toolchain.
+// Committed on purpose: a receipt is only useful if it is the one the released package
+// shipped with, and both `src/index.js` and `bin/llvm-wasm-unpack.mjs` check reads against it.
 await writeFile(
-	receipt,
-	`${JSON.stringify(
-		{
-			file: 'out.tar.xz',
-			bytes,
-			sha256: digest,
-			files: listed.split('\n').filter(Boolean).length,
-			archives: archives.length,
-			note: 'Generated by scripts/pack-out.mjs. llvm-wasm-unpack verifies against this.'
-		},
-		null,
-		2
-	)}\n`
+	receiptsPath,
+	`// Generated by scripts/pack-out.mjs — do not edit by hand.
+//
+// The archives as they ship: one gzipped file each, among the headers under out/. Every
+// read is checked against these receipts, so a stale copy, a truncated download or a host
+// serving something else is named rather than linked into a toolchain that then fails
+// somewhere stranger. ${archives.length} archives, ${(gzippedTotal / 1e6).toFixed(1)} MB gzipped
+// from ${(rawTotal / 1e6).toFixed(1)} MB.
+//
+// Re-pin with \`node scripts/pack-out.mjs\` after rebuilding the archives.
+
+export const ASSET_RECEIPTS = ${JSON.stringify(receipts, null, '\t')};
+
+/** Where the shipped archives live inside the package. */
+export const ASSETS_DIR = 'out/lib';
+
+/** The compatibility layer, which has to be linked with them. */
+export const COMPAT_DIR = 'wasi-compat';
+`
 );
 
-console.log(`out.tar.xz: ${(bytes / 1e6).toFixed(1)} MB, ${archives.length} archives, sha256 ${digest.slice(0, 16)}…`);
+console.log(
+	`${archives.length} archives: ${(rawTotal / 1e6).toFixed(1)} MB raw, ${(gzippedTotal / 1e6).toFixed(1)} MB gzipped` +
+		(repacked ? ` (${repacked} gzipped now)` : ' (all current)')
+);
