@@ -1,0 +1,41 @@
+{
+  "name": "@live-codes/llvm-wasm",
+  "version": "0.1.0",
+  "description": "libLLVM 20.1.8 built for wasm32-wasip1, to link a wasm compiler against",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/live-codes/llvm-wasm"
+  },
+  "bin": {
+    "llvm-wasm-path": "./bin/llvm-wasm-path.mjs"
+  },
+  "files": [
+    "out",
+    "patches",
+    "wasi-compat",
+    "verify",
+    "bin",
+    "scripts",
+    "build.sh",
+    "fetch.sh",
+    "toolchain-wasi.cmake",
+    "llvm-wasm.lock.json",
+    "STATUS.md",
+    "THIRD-PARTY-NOTICES.md"
+  ],
+  "scripts": {
+    "check": "node scripts/check-out.mjs",
+    "prepack": "node scripts/check-out.mjs",
+    "verify": "bash verify/run-probe.sh"
+  },
+  "keywords": [
+    "llvm",
+    "wasm",
+    "webassembly",
+    "wasi",
+    "wasm32-wasip1",
+    "compiler"
+  ]
+}

@@ -1,0 +1,4 @@
+# verify/run-probe.sh's build products, regenerated on every verify.
+# out/ is committed on purpose: it is the artifact, and it takes an hour to rebuild.
+verify/*.o
+verify/*.wasm
