@@ -13,14 +13,28 @@ itself a Crystal program that links LLVM, and this is what it links.
 ## Use
 
 ```bash
-npm install @live-codes/llvm-wasm
-LLVM_WASM=$(npx llvm-wasm-path)     # …/node_modules/@live-codes/llvm-wasm
+npm install @live-codes/llvm-wasm       # unpacks the archives on install
+LLVM_WASM=$(npx llvm-wasm-path)         # …/node_modules/@live-codes/llvm-wasm
 ```
+
+The tarball carries the payload as one file, `out.tar.xz`, and `postinstall` unpacks it.
+Where lifecycle scripts are skipped (`--ignore-scripts`, or a CI that blocks them), run it
+yourself — it is one command:
+
+```bash
+npx llvm-wasm-unpack                    # into the package; or `llvm-wasm-unpack <dir>`
+```
+
+An unpacked directory is complete on its own — `out/lib`, `out/include` and `wasi-compat/` —
+so `llvm-wasm-unpack <dir>` gives you a directory to point `LLVM_WASM` at with no
+node_modules in the path. It checks the archive against `out.tar.xz.json` first, so a
+truncated download is a message rather than a half-unpacked toolchain.
 
 | in the package | what it is |
 | --- | --- |
-| `out/lib/*.a` | **99 static archives** — LLVM and its WebAssembly backend, for `wasm32-wasip1` |
-| `out/include/` | the matching headers |
+| `out.tar.xz` | the payload in one file: **99 static archives** — LLVM and its WebAssembly backend, for `wasm32-wasip1` — their headers, and the compatibility layer |
+| `out/lib/*.a` | the archives, after unpacking |
+| `out/include/` | the matching headers, after unpacking |
 | `wasi-compat/` | declarations and stub definitions for the POSIX surface WASI does not have — **link this with the archives**, or you will hit undefined `pwd`, `dlopen`, `sigaction`, `fork` and friends |
 | `patches/apply-patches.py` | every source edit that made the build possible |
 | `verify/` | the C-API probe: links against all 99 archives and runs under Node's WASI |
@@ -104,17 +118,27 @@ Env: `WORK` (build tree, default `/root/bc-llvm`), `CACHE` (downloads, `/root/.c
 | `verify/run-probe.sh` | Compiles, links and runs the probe under Node's WASI |
 | `STATUS.md` | Live status: what builds, what remains |
 
+`npm pack` runs `scripts/pack-out.mjs` first: it builds `out.tar.xz` from `out/` and writes
+`out.tar.xz.json` beside it — the one file the tarball carries, and the receipt the unpack
+checks. It rebuilds when `out/` has changed under it, so a stale archive cannot be published,
+and it refuses to pack an incomplete `out/`.
+
 ## The size, honestly
 
-The published tarball is **38 MB**, and it installs to **143 MB**: 99 archives (113 MB) and their
-headers (33 MB), committed rather than built on install. That is deliberate — rebuilding takes an
-hour of someone's machine and produces byte-identical output (`llvm-wasm.lock.json` pins every
-input) — and it is the difference between a dependency and a build step for a port. It is heavier
-than most packages, though not the 140 MB the installed size suggests.
+**21 MB to download, 143 MB installed.** The tarball carries the payload as a single
+`out.tar.xz`; `postinstall` unpacks it — and deletes the archive — so a full install is
+143 MB on disk and nothing more.
 
-If even that becomes the deciding factor, the escape hatch is to publish `out/` as a release asset
-and fetch it on install — the shape `@live-codes/clang-wasm` uses for its own ~29 MB of tools.
-Nothing else in the package would change.
+That is 45% less to download than shipping the tree loose: 2278 files make a 38 MB npm
+tarball, because npm's own gzip can only do so much with `.a` files, while xz gets the same
+bytes to 21 MB. It is also the difference for a CDN: one cacheable object instead of 2278
+requests.
+
+The archives are committed rather than built on install, deliberately — a rebuild takes an
+hour of someone's machine and produces byte-identical output (`llvm-wasm.lock.json` pins
+every input; `out.tar.xz.json` pins the archive, and the unpack checks it). If even 21 MB
+becomes the deciding factor, the escape hatch is a release asset plus a fetch, the shape
+`@live-codes/clang-wasm` uses for its own tools.
 
 ## Licence
 

@@ -1,4 +1,8 @@
 # verify/run-probe.sh's build products, regenerated on every verify.
-# out/ is committed on purpose: it is the artifact, and it takes an hour to rebuild.
 verify/*.o
 verify/*.wasm
+
+# The one file the npm tarball carries (scripts/pack-out.mjs builds it from out/).
+# out/ itself is committed on purpose: it is the artifact, and it takes an hour to rebuild.
+out.tar.xz
+out.tar.xz.json

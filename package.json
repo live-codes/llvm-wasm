@@ -9,10 +9,12 @@
     "url": "https://github.com/live-codes/llvm-wasm"
   },
   "bin": {
-    "llvm-wasm-path": "./bin/llvm-wasm-path.mjs"
+    "llvm-wasm-path": "./bin/llvm-wasm-path.mjs",
+    "llvm-wasm-unpack": "./bin/llvm-wasm-unpack.mjs"
   },
   "files": [
-    "out",
+    "out.tar.xz",
+    "out.tar.xz.json",
     "patches",
     "wasi-compat",
     "verify",
@@ -27,7 +29,9 @@
   ],
   "scripts": {
     "check": "node scripts/check-out.mjs",
-    "prepack": "node scripts/check-out.mjs",
+    "pack": "node scripts/pack-out.mjs",
+    "prepack": "node scripts/pack-out.mjs",
+    "postinstall": "node bin/llvm-wasm-unpack.mjs --if-missing",
     "verify": "bash verify/run-probe.sh"
   },
   "keywords": [
